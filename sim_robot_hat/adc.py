@@ -15,6 +15,7 @@ class ADC(I2C):
         :param chn: channel number (0-7/A0-A7)
         :type chn: int/str
         """
+        return
         if address is not None:
             super().__init__(address, *args, **kwargs)
         else:

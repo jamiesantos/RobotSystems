@@ -6,9 +6,13 @@ from .filedb import fileDB
 
 class Motor():
     """Motor"""
-    PERIOD = 4095
-    PRESCALER = 10
+    #PERIOD = 4095
+    #PRESCALER = 10
     DEFAULT_FREQ = 100 # Hz
+    
+    User = None
+    Userhome = None
+    config_file = None
 
     '''
     motor mode 1: (TC1508S)

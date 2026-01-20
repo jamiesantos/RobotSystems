@@ -39,6 +39,7 @@ class I2C(_Basic_class):
         """
         super().__init__(*args, **kwargs)
         self._bus = bus
+        return
         self._smbus = SMBus(self._bus)
         if isinstance(address, list):
             connected_devices = self.scan()
@@ -69,6 +70,7 @@ class I2C(_Basic_class):
     @_retry_wrapper
     def _write_word_data(self, reg, data):
         # with I2C.i2c_lock.get_lock():
+        return
         self._debug(f"_write_word_data: [0x{reg:02X}] [0x{data:04X}]")
         return self._smbus.write_word_data(self.address, reg, data)
 
@@ -258,6 +260,7 @@ class I2C(_Basic_class):
         return self.address in self.scan()
 
     def __del__(self):
+        return
         self._smbus.close()
         self._smbus = None
 

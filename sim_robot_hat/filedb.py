@@ -13,6 +13,7 @@
 import os
 from time import sleep
 
+on_the_robot = False
 
 class fileDB(object):
 	"""A file based database.
@@ -33,7 +34,7 @@ class fileDB(object):
 
 		self.db = db
 		# Check if db_file is existed, otherwise create one
-		if self.db != None:	
+		if self.db != None or not on_the_robot:	
 			self.file_check_create(db, mode, owner)
 		else:
 			raise ValueError('db: Missing file path parameter.')
@@ -50,6 +51,7 @@ class fileDB(object):
 		:param owner: the owner of the file.
 		:type owner: str
 		"""
+		return
 		dir = file_path.rsplit('/',1)[0]
 		try:
 			if os.path.exists(file_path):
@@ -86,6 +88,8 @@ class fileDB(object):
 		:return: the value of the arguement
 		:rtype: str
 		"""
+		if not on_the_robot:
+			return default_value
 		try:
 			conf = open(self.db,'r')
 			lines=conf.readlines()
@@ -119,6 +123,8 @@ class fileDB(object):
 		:param value: the value of the arguement
 		:type value: str
 		"""
+		if not on_the_robot:
+			return
 		# Read the file
 		conf = open(self.db,'r')
 		lines=conf.readlines()

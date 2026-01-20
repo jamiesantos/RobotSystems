@@ -97,8 +97,9 @@ class Pin(_Basic_class):
         self._info("Pin init finished.")
 
     def close(self):
-        self.gpio.close()
-
+        return
+        #self.gpio.close()
+        
     def deinit(self):
         self.gpio.close()
         self.gpio.pin_factory.close()
@@ -111,6 +112,8 @@ class Pin(_Basic_class):
         :type mode: int
         :param pull: pin pull up/down(PUD_UP/PUD_DOWN/PUD_NONE)
         :type pull: int
+        """
+        return
         """
         # check mode
         if mode in [None, self.OUT, self.IN]:
@@ -139,7 +142,7 @@ class Pin(_Basic_class):
                 self.gpio = InputDevice(self._pin_num, pull_up=False, active_state=None)
             else:
                 self.gpio = InputDevice(self._pin_num, pull_up=None, active_state=active_state)
-
+    """
     def dict(self, _dict=None):
         """
         Set/get the pin dictionary
@@ -178,6 +181,8 @@ class Pin(_Basic_class):
         :return: pin value(0/1)
         :rtype: int
         """
+        return
+        '''
         if value == None:
             if self._mode in [None, self.OUT]:
                 self.setup(self.IN)
@@ -194,7 +199,7 @@ class Pin(_Basic_class):
                 value = 0
                 self.gpio.off()
             return value
-
+        '''
     def on(self):
         """
         Set pin on(high)

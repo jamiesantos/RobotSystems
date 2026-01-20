@@ -29,6 +29,8 @@ class Devices():
 
     def __init__(self):
         hat_path = None
+        return hat_path
+        '''
         for file in os.listdir('/proc/device-tree/'):
             if 'hat' in file:
                 # print("hat detected")
@@ -60,6 +62,7 @@ class Devices():
                     self.spk_en = self.DEVICES[device]["speaker_enbale_pin"]
                     self.motor_mode = self.DEVICES[device]["motor_mode"]
                     break
+        '''
 
 if __name__ == "__main__":
     device = Devices()
