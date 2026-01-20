@@ -1,6 +1,7 @@
 import time
 import os
 import logging
+import atexit
 
 logging_format = "%(asctime)s: %(message)s"
 logging.basicConfig(format=logging_format, level=logging.INFO, datefmt='%H:%M:%S')
@@ -245,6 +246,7 @@ class Picarx(object):
                 self.motor_speed_pins[1].pulse_width_percent(0)
                 time.sleep(0.002)
 
+
     def get_distance(self):
         return self.ultrasonic.read()
 
@@ -289,7 +291,12 @@ class Picarx(object):
         self.ultrasonic.close()
 
 if __name__ == "__main__":
-    px = Picarx()
-    px.forward(50)
-    time.sleep(1)
-    px.stop()
+    try:
+        px = Picarx()
+        px.forward(50)
+        time.sleep(1)
+        px.stop()
+    except KeyboardInterrupt:
+        logging.debug("Keyboard interrupt")
+        px.close()
+
