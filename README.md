@@ -1,3 +1,5 @@
+This is the codebase used on my PiCar for ROB515 Intro to Robotics II at Oregon State University, Wi2026.
+
 # Picar-X
 
 Picar-X Python library for Raspberry Pi.
