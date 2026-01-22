@@ -2,6 +2,7 @@ import time
 import os
 import logging
 import atexit
+import math
 
 logging_format = "%(asctime)s: %(message)s"
 logging.basicConfig(format=logging_format, level=logging.INFO, datefmt='%H:%M:%S')
@@ -134,6 +135,15 @@ class Picarx(object):
         #if speed != 0:
         #    speed = int(speed /2 ) + 50
         speed = speed - self.cali_speed_value[motor]
+        # log what we're about to do to help debugging hardware behavior
+        logging.debug(
+            "set_motor_speed: motor=%d direction=%s pwm=%s cali_dir=%s cali_speed=%s",
+            motor + 1,
+            ('reverse' if direction < 0 else 'forward'),
+            speed,
+            self.cali_dir_value[motor],
+            self.cali_speed_value[motor]
+        )
         if direction < 0:
             self.motor_direction_pins[motor].high()
             self.motor_speed_pins[motor].pulse_width_percent(speed)
@@ -149,6 +159,7 @@ class Picarx(object):
         else:
             self.cali_speed_value[0] = abs(self.cali_speed_value)
             self.cali_speed_value[1] = 0
+        logging.debug("motor_speed_calibration: cali_speed_value=%s", self.cali_speed_value)
 
     def motor_direction_calibrate(self, motor, value):
         ''' set motor direction calibration value
@@ -164,6 +175,7 @@ class Picarx(object):
         elif value == -1:
             self.cali_dir_value[motor] = -1
         self.config_flie.set("picarx_dir_motor", self.cali_dir_value)
+        logging.debug("motor_direction_calibrate: motor=%d cali_dir=%s", motor+1, self.cali_dir_value[motor])
 
     def dir_servo_calibrate(self, value):
         self.dir_cali_val = value
@@ -194,22 +206,57 @@ class Picarx(object):
         self.cam_tilt.angle(-1*(value + -1*self.cam_tilt_cali_val))
 
     def set_power(self, speed):
+        logging.debug("set_power: setting both motors to speed=%s", speed)
         self.set_motor_speed(1, speed)
         self.set_motor_speed(2, speed)
+
+    def _wheel_speed_scaling(self, steering_angle):
+        """
+        Compute left/right wheel speed scaling factors from a steering angle
+        using an Ackerman-inspired sinusoidal approximation.
+
+        Returns a tuple (left_scale, right_scale) where each value is in [0,1]
+        and is a multiplier to apply to the requested speed. The inner wheel
+        (towards the turn) is reduced smoothly using a cosine curve so small
+        steering angles produce gentle speed differences and large angles
+        reduce the inner wheel towards zero.
+
+        The function respects the sign convention used elsewhere in this
+        class: positive steering_angle will scale the left wheel (as the
+        existing forward/backward logic expects), negative will scale the
+        right wheel.
+        """
+        # Clamp to allowed steering range
+        abs_angle = min(abs(steering_angle), self.DIR_MAX)
+        if abs_angle == 0:
+            return 1.0, 1.0
+
+        # normalize to [0,1]
+        a = abs_angle / float(self.DIR_MAX)
+        # use a cosine curve from 0..pi/2 so cos(0)=1 (no reduction), cos(pi/2)=0 (max reduction)
+        inner_scale = math.cos(a * math.pi / 2.0)
+        # outer wheel keeps full speed (do not exceed requested speed)
+        outer_scale = 1.0
+
+        if steering_angle > 0:
+            # positive steering angles -> reduce left wheel
+            return inner_scale, outer_scale
+        else:
+            # negative steering angles -> reduce right wheel
+            return outer_scale, inner_scale
 
     def backward(self, speed):
         current_angle = self.dir_current_angle
         if current_angle != 0:
-            abs_current_angle = abs(current_angle)
-            if abs_current_angle > self.DIR_MAX:
-                abs_current_angle = self.DIR_MAX
-            power_scale = (100 - abs_current_angle) / 100.0 
-            if (current_angle / abs_current_angle) > 0:
-                self.set_motor_speed(1, -1*speed)
-                self.set_motor_speed(2, speed * power_scale)
-            else:
-                self.set_motor_speed(1, -1*speed * power_scale)
-                self.set_motor_speed(2, speed )
+            left_scale, right_scale = self._wheel_speed_scaling(current_angle)
+            left_speed = -1 * int(speed * left_scale)
+            right_speed = int(speed * right_scale)
+            logging.debug(
+                "backward: angle=%s left_scale=%.3f right_scale=%.3f left_speed=%s right_speed=%s",
+                current_angle, left_scale, right_scale, left_speed, right_speed
+            )
+            self.set_motor_speed(1, left_speed)
+            self.set_motor_speed(2, right_speed)
         else:
             self.set_motor_speed(1, -1*speed)
             self.set_motor_speed(2, speed)  
@@ -220,16 +267,16 @@ class Picarx(object):
         else:
             current_angle = self.dir_current_angle
             if current_angle != 0:
-                abs_current_angle = abs(current_angle)
-                if abs_current_angle > self.DIR_MAX:
-                    abs_current_angle = self.DIR_MAX
-                power_scale = (100 - abs_current_angle) / 100.0
-                if (current_angle / abs_current_angle) > 0:
-                    self.set_motor_speed(1, 1*speed * power_scale)
-                    self.set_motor_speed(2, -speed) 
-                else:
-                    self.set_motor_speed(1, speed)
-                    self.set_motor_speed(2, -1*speed * power_scale)
+                left_scale, right_scale = self._wheel_speed_scaling(current_angle)
+                left_speed = int(speed * left_scale)
+                right_speed = -1 * int(speed * right_scale)
+                logging.debug(
+                    "forward: angle=%s left_scale=%.3f right_scale=%.3f left_speed=%s right_speed=%s",
+                    current_angle, left_scale, right_scale, left_speed, right_speed
+                )
+                # left motor moves "forward" -> positive speed, right motor moves "backward" -> negative
+                self.set_motor_speed(1, left_speed)
+                self.set_motor_speed(2, right_speed)
             else:
                 self.set_motor_speed(1, speed)
                 self.set_motor_speed(2, -1*speed)                  
@@ -241,6 +288,7 @@ class Picarx(object):
         if not on_the_robot:
             pass
         else:
+            logging.debug("stop: setting PWM to 0 for both motors")
             for _ in range(2):
                 self.motor_speed_pins[0].pulse_width_percent(0)
                 self.motor_speed_pins[1].pulse_width_percent(0)
@@ -291,9 +339,16 @@ class Picarx(object):
         self.ultrasonic.close()
 
 if __name__ == "__main__":
+    px = Picarx()
+    atexit.register(px.close)
     try:
-        px = Picarx()
         px.forward(50)
+        px.set_dir_servo_angle(15)
+        time.sleep(1)
+        px.stop()
+        time.sleep(3)
+        px.backward(50)
+        px.set_dir_servo_angle(15)
         time.sleep(1)
         px.stop()
     except KeyboardInterrupt:
