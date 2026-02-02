@@ -1,7 +1,3 @@
-"""
-A set of higher-level actions for the Picar-X robot, built on top of
-the low-level Picarx class.
-"""
 import time
 import logging
 import sys
@@ -25,11 +21,7 @@ def drive_time(px: Picarx,
                duration: float = 1.0,
                forward: bool = True,
                settle: float = 0.08) -> None:
-    """Drive the robot for a fixed time with a steering angle.
 
-    Sets steering angle, waits briefly for servo to settle, runs the motors
-    for `duration` seconds, then stops.
-    """
     # Constrain angle to class limits if available
     try:
         steering_angle = int(max(px.DIR_MIN, min(px.DIR_MAX, steering_angle)))
@@ -63,9 +55,6 @@ def maneuver_backward(px: Picarx, speed=30, angle=0, duration=1.0):
     drive_time(px, speed=speed, steering_angle=angle, duration=duration, forward=False)
     
 def maneuver_parallel_park_left(px: Picarx, speed=25):
-    """
-    Approximate parallel park left using a short scripted sequence.
-    """
     logger.info("Parallel park left")
     # approach forward slightly
     drive_time(px, speed=40, steering_angle=0, duration=2, forward=True)
@@ -86,15 +75,6 @@ def maneuver_parallel_park_right(px: Picarx, speed=25):
     drive_time(px, speed=10, steering_angle=0, duration=0.2, forward=True)
     
 def maneuver_k_turn(px: Picarx, start_left=True, speed=50):
-    """Three-point turn (K-turn) approximation.
-
-    Steps (start_left=True):
-      1) forward-left
-      2) backward-right
-      3) forward-left (short) to complete
-
-    Inverse the angles if start_left=False.
-    """
     if start_left:
         logger.info("Three-point turn: start left")
         drive_time(px, speed=speed, steering_angle=0, duration=3, forward=True)

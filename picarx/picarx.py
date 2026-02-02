@@ -26,6 +26,12 @@ class Picarx(object):
     PERIOD = 4095
     PRESCALER = 10
     TIMEOUT = 0.02
+    # Fraction of max speed to reduce at maximum steering angle.
+    # 0.6 means at DIR_MAX the speed will be reduced by 60% (i.e. run at 40%).
+    TURN_SPEED_REDUCTION = 0.6
+    PERIOD = 4095
+    PRESCALER = 10
+    TIMEOUT = 0.02
 
     # servo_pins: camera_pan_servo, camera_tilt_servo, direction_servo
     # motor_pins: left_swicth, right_swicth, left_pwm, right_pwm
@@ -109,7 +115,9 @@ class Picarx(object):
         speed = abs(speed)
         # print(f"direction: {direction}, speed: {speed}")
         if speed != 0:
-            speed = int(speed /2 ) + 50
+            # original mapping: scale down and add offset so small
+            # requested speeds still produce usable PWM.
+            speed = int(speed / 2) + 50
         speed = speed - self.cali_speed_value[motor]
         if direction < 0:
             self.motor_direction_pins[motor].high()
@@ -176,8 +184,15 @@ class Picarx(object):
 
     def backward(self, speed):
         current_angle = self.dir_current_angle
+        # reduce overall speed when steering angle is large so the car can
+        # adjust more gracefully. scale is in (0,1]. At 0 angle scale==1.
+        abs_current_angle = abs(current_angle)
+        if abs_current_angle > self.DIR_MAX:
+            abs_current_angle = self.DIR_MAX
+        turn_scale = 1.0 - (abs_current_angle / float(self.DIR_MAX)) * self.TURN_SPEED_REDUCTION
+        # apply overall turn-based speed scaling
+        speed = int(speed * turn_scale)
         if current_angle != 0:
-            abs_current_angle = abs(current_angle)
             if abs_current_angle > self.DIR_MAX:
                 abs_current_angle = self.DIR_MAX
             power_scale = (100 - abs_current_angle) / 100.0 
@@ -193,6 +208,13 @@ class Picarx(object):
 
     def forward(self, speed):
         current_angle = self.dir_current_angle
+        # reduce overall speed when steering angle is large so the car can
+        # adjust more gracefully. See TURN_SPEED_REDUCTION doc above.
+        abs_current_angle = abs(current_angle)
+        if abs_current_angle > self.DIR_MAX:
+            abs_current_angle = self.DIR_MAX
+        turn_scale = 1.0 - (abs_current_angle / float(self.DIR_MAX)) * self.TURN_SPEED_REDUCTION
+        speed = int(speed * turn_scale)
         if current_angle != 0:
             abs_current_angle = abs(current_angle)
             if abs_current_angle > self.DIR_MAX:

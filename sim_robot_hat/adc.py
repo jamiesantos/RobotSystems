@@ -15,7 +15,8 @@ class ADC(I2C):
         :param chn: channel number (0-7/A0-A7)
         :type chn: int/str
         """
-        return
+    # initialize the I2C/ADC device; earlier accidental `return` removed
+    # so initialization can proceed.
         if address is not None:
             super().__init__(address, *args, **kwargs)
         else:

@@ -39,7 +39,7 @@ class I2C(_Basic_class):
         """
         super().__init__(*args, **kwargs)
         self._bus = bus
-        return
+    # continue normal initialization (removed accidental early return)
         self._smbus = SMBus(self._bus)
         if isinstance(address, list):
             connected_devices = self.scan()
