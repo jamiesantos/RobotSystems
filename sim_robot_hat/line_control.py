@@ -24,6 +24,7 @@ from collections import deque
 
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
+from readerwriterlock import rwlock
 
 # When this file is executed directly (python3 sim_robot_hat/line_control.py)
 # the package context is missing which breaks relative imports used by
@@ -42,22 +43,21 @@ except Exception:
 
 
 class Bus:
-    """Thread-safe FIFO message bus."""
+    """Writer-priority shared message bus (whiteboard)."""
 
     def __init__(self, bus_id):
         self.bus_id = bus_id
-        self.messages = deque()
-        self.lock = threading.Lock()
+        self.message = None
+        self.lock = rwlock.RWLockWriteD()
 
     def write(self, message):
-        with self.lock:
-            self.messages.append(message)
+        with self.lock.gen_wlock():
+            self.message = message
 
     def read(self):
-        with self.lock:
-            if self.messages:
-                return self.messages.popleft()
-            return None
+        with self.lock.gen_rlock():
+            return self.message
+
 
 class Sensor:
     """Read three ADC channels and return raw values.
