@@ -2,3 +2,5 @@
 build/*
 bk/
 *secret*
+sim_robot_hat/__pycache__
+picarx/__pycache__
