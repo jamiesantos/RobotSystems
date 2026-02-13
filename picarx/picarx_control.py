@@ -2,9 +2,7 @@ import time
 import logging
 import sys
 from typing import Iterable, Tuple
-import picarx_improved
-from picarx_improved import Picarx
-
+from picarx import Picarx
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s: %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -114,7 +112,7 @@ def main():
                 print_help()
                 continue
             elif cmd == 'w':
-                maneuver_forward(px, speed=30, angle=0, duration=1.0)
+                maneuver_forward(px, speed=20, angle=0, duration=1.0)
             elif cmd == 's':
                 maneuver_backward(px, speed=30, angle=0, duration=1.0)
             elif cmd == 'W':

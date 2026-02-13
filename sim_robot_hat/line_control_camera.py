@@ -36,58 +36,149 @@ except Exception:
     from sim_robot_hat.adc import ADC
 
 
-class Sensor:
-    """Read three ADC channels and return raw values.
+import subprocess
+import cv2
+import numpy as np
 
-    The constructor accepts either ADC instances or channel identifiers
-    (for example 'A0', 'A1', 'A2') which will be used to construct
-    ADC objects.
+class Sensor:
+    """
+    Camera-based replacement for the 3-channel grayscale sensor.
+
+    Captures a still image using rpicam-still, converts to grayscale,
+    and samples three vertical regions (left, center, right).
     """
 
-    def __init__(self, left, middle, right):
-        # Accept ADC objects or channel specifiers
-        # Accept ADC-like objects (from either sim_robot_hat.ADC or robot_hat.ADC)
-        # or channel specifiers (e.g. 'A0'). Use duck-typing: if the object
-        # has a callable `read()` method treat it as an ADC instance.
-        self.left = left if (hasattr(left, 'read') and callable(getattr(left, 'read'))) else ADC(left)
-        self.middle = middle if (hasattr(middle, 'read') and callable(getattr(middle, 'read'))) else ADC(middle)
-        self.right = right if (hasattr(right, 'read') and callable(getattr(right, 'read'))) else ADC(right)
-        # Quick camera check: attempt to capture a single frame and save as hi.png
-        # This is best-effort and must not raise on failure (we don't want to
-        # prevent sensor construction if the camera or OpenCV/Picamera2 isn't
-        # available).
+    def __init__(self, width=640, height=480):
+        self.width = width
+        self.height = height
+        # Best-effort capture: capture a frame and save three crops that match
+        # the left/center/right regions used by `read()` so users can verify
+        # the camera and the sampling regions. Do not raise on failure.
         try:
-            # import local helper that wraps Picamera2/OpenCV
-            from .test import Image_Sensing
-            import cv2
-
-            try:
-                cam = Image_Sensing()
-                frame = cam.read_values()
-                if frame is not None:
-                    # Picamera2 returns RGB frames while OpenCV uses BGR.
-                    # Image_Sensing sets cam.backend to 'picam' when Picamera2 is used.
-                    if getattr(cam, 'backend', None) == 'picam':
-                        # convert RGB -> BGR for correct colors when saving with OpenCV
-                        frame = frame[:, :, ::-1]
-                    cv2.imwrite('hi.png', frame)
-                cam.close()
-            except Exception:
-                # ignore camera capture errors
+            p = subprocess.run(
+                [
+                    "rpicam-still",
+                    "--nopreview",
+                    "--width", str(self.width),
+                    "--height", str(self.height),
+                    "-o", "-"
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=10
+            )
+            img_color = cv2.imdecode(
+                np.frombuffer(p.stdout, np.uint8),
+                cv2.IMREAD_COLOR
+            )
+            if img_color is not None:
+                h, w = img_color.shape[:2]
+                slice_w = w // 3
+                slice_h = h // 3
+                # use the same vertical band as read(): middle third in height
+                top = slice_h
+                bottom = 2 * slice_h
+                left_crop = img_color[top:bottom, 0:slice_w]
+                middle_crop = img_color[top:bottom, slice_w:2*slice_w]
+                right_crop = img_color[top:bottom, 2*slice_w:w]
+                #left_crop   = img_color[slice_h:2*slice_h, slice_w :slice_w + slice_w //3]
+                #middle_crop = img_color[slice_h:2*slice_h, slice_w + slice_w //3:2*slice_w - slice_w //3]
+                #right_crop  = img_color[slice_h:2*slice_h, 2*slice_w-slice_w //3:2*slice_w]
+                # save color crops so they're easy to inspect
+                print(h,w)
+                cv2.imwrite('hi_left.png', left_crop)
+                cv2.imwrite('hi_middle.png', middle_crop)
+                cv2.imwrite('hi_right.png', right_crop)
+            else:
+                # fallback: try local Image_Sensing helper (OpenCV or Picamera2)
                 try:
-                    cam.close()
+                    from .test import Image_Sensing
+                    cam = Image_Sensing(width=self.width, height=self.height)
+                    frame = cam.read_values()
+                    if frame is not None:
+                        # frame may be RGB (picam) or BGR (opencv); normalize to BGR
+                        if getattr(cam, 'backend', None) == 'picam':
+                            frame = frame[:, :, ::-1]
+                        h, w = frame.shape[:2]
+                        slice_w = w // 3
+                        slice_h = h // 3
+                        top = slice_h
+                        bottom = 2 * slice_h
+                        #left_crop = frame[top:bottom, 0:slice_w]
+                        #middle_crop = frame[top:bottom, slice_w:2*slice_w]
+                        #right_crop = frame[top:bottom, 2*slice_w:w]
+                        left_crop   = frame[slice_h:2*slice_h, slice_w :slice_w + slice_w //3]
+                        middle_crop = frame[slice_h:2*slice_h, slice_w + slice_w //3:2*slice_w - slice_w //3]
+                        right_crop  = frame[slice_h:2*slice_h, 2*slice_w-slice_w //3:2*slice_w]
+                        cv2.imwrite('hi_left.png', left_crop)
+                        cv2.imwrite('hi_middle.png', middle_crop)
+                        cv2.imwrite('hi_right.png', right_crop)
+                    try:
+                        cam.close()
+                    except Exception:
+                        pass
                 except Exception:
                     pass
         except Exception:
-            # either Image_Sensing or cv2 isn't available — skip camera check
+            # don't raise on camera errors during Sensor init
             pass
 
-    def read(self) -> List[float]:
-        """Poll the three ADC channels and return a list [L, M, R]."""
-        print("left: " + str(self.left.read()))
-        print("middle: " + str(self.middle.read()))
-        print("right: " + str(self.right.read()))
-        return [self.left.read(), self.middle.read(), self.right.read()]
+    def read(self):
+        # Capture a single frame to stdout
+        p = subprocess.run(
+            [
+                "rpicam-still",
+                "--nopreview",
+                "--width", str(self.width),
+                "--height", str(self.height),
+                "-o", "-"
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL
+        , timeout=8
+        )
+
+        img = cv2.imdecode(
+            np.frombuffer(p.stdout, np.uint8),
+            cv2.IMREAD_GRAYSCALE
+        )
+
+        if img is None:
+            raise RuntimeError("Failed to capture camera frame")
+
+        h, w = img.shape
+
+        # Define three vertical slices (columns). We'll look only at the
+        # bottom row of each slice and treat the box as "containing the line"
+        # when more than 50% of that bottom row's pixels are darker than
+        # a threshold.
+        slice_w = w // 3
+        bottom_row_index = h - 1
+
+        # per-box thresholds and test
+        DARK_THRESHOLD = 120  # pixel value <= this counts as "dark"
+        DARK_FRACTION_REQUIRED = 0.5
+
+        results = []
+        for i in range(3):
+            start = i * slice_w
+            end = (i + 1) * slice_w if i < 2 else w
+            row = img[bottom_row_index, start:end]
+            if row.size == 0:
+                # defensive: treat empty as not-detected
+                results.append(255.0)
+                continue
+            dark_count = int((row <= DARK_THRESHOLD).sum())
+            frac = dark_count / float(row.size)
+            if frac > DARK_FRACTION_REQUIRED:
+                # line present -> return dark (low) value
+                results.append(0.0)
+            else:
+                # no line -> return bright (high) value
+                results.append(255.0)
+
+        return [float(v) for v in results]
+
 
 
 class Interpreter:
@@ -240,7 +331,7 @@ def run_line_follow(sensor: Optional[Sensor] = None,
             raise RuntimeError("Could not access car.grayscale.pins to build sensors") from e
 
         if sensor is None:
-            sensor = Sensor(adc0, adc1, adc2)
+            sensor = Sensor()
         if interpreter is None:
             interpreter = Interpreter(sensitivity=sensitivity, polarity=polarity)
         if controller is None:
@@ -265,6 +356,7 @@ def run_line_follow(sensor: Optional[Sensor] = None,
             if verbose:
                 print("[line_control] about to read sensors")
             readings = sensor.read()
+            print(readings)
             if verbose:
                 print(f"[line_control] sensor read -> {readings}")
             offset = interpreter.process(readings)
@@ -289,7 +381,7 @@ def run_line_follow(sensor: Optional[Sensor] = None,
                     print(f"[line_control] setting car speed to {current_speed}")
                 car.forward(current_speed)
                 #ctrl.maneuver_forward(car, speed=current_speed, angle=0, duration=loop_delay)
-                print("hi")
+                #print("hi")
                 # small sleep to make motion smooth
                 time.sleep(loop_delay)
             if timeout is not None and (time.time() - start) > timeout:
@@ -328,6 +420,7 @@ if __name__ == "__main__":
     try:
         from picarx.picarx import Picarx
         car = Picarx()
+        car.set_cam_tilt_angle(-35)
         print("Picarx created — starting hardware line-follow test")
         # allow runtime tuning of motor mapping without editing picarx.py
     except Exception as e:
