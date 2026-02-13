@@ -22,6 +22,9 @@ import picarx.picarx_control as ctrl
 import threading
 from collections import deque
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
+
 # When this file is executed directly (python3 sim_robot_hat/line_control.py)
 # the package context is missing which breaks relative imports used by
 # sibling modules (for example adc.py imports .i2c). Ensure the repository
@@ -109,12 +112,11 @@ class Sensor:
         print("right: " + str(self.right.read()))
         return [self.left.read(), self.middle.read(), self.right.read()]
     
-    def run(self, output_bus, delay=0.06):
-        while True:
+    def run(self, output_bus, shutdown_event, delay=0.06):
+        while not shutdown_event.is_set():
             readings = self.read()
             output_bus.write(readings)
             time.sleep(delay)
-
 
 
 class Interpreter:
@@ -185,16 +187,14 @@ class Interpreter:
         offset = -1 * offset
         return offset
 
-    def run(self, input_bus, output_bus, delay=0.01):
-        while True:
+    def run(self, input_bus, output_bus, shutdown_event, delay=0.01):
+        while not shutdown_event.is_set():
             readings = input_bus.read()
             if readings is not None:
                 offset = self.process(readings)
                 if offset is not None:
                     output_bus.write(offset)
             time.sleep(delay)
-
-
 
 
 class Controller:
@@ -236,12 +236,18 @@ class Controller:
         self._steer(angle)
         return angle
     
-    def run(self, input_bus, delay=0.01):
-        while True:
+    def run(self, input_bus, shutdown_event, delay=0.01):
+        while not shutdown_event.is_set():
             offset = input_bus.read()
             if offset is not None:
                 self.command(offset)
             time.sleep(delay)
+
+
+def handle_exception(future):
+    exception = future.exception()
+    if exception:
+        print(f'Exception in worker thread: {exception}')
 
 
 def run_line_follow(sensor: Optional[Sensor] = None,
@@ -343,27 +349,57 @@ def run_line_follow(sensor: Optional[Sensor] = None,
         if timeout is not None and (time.time() - start) > timeout:
             break
     '''
-    threads = [
-        threading.Thread(
-            target=sensor.run,
-            args=(sensor_bus, loop_delay),
-            daemon=True
-        ),
-        threading.Thread(
-            target=interpreter.run,
-            args=(sensor_bus, offset_bus),
-            daemon=True
-        ),
-        threading.Thread(
-            target=controller.run,
-            args=(offset_bus,),
-            daemon=True
-        ),
-    ]
-    
-    for t in threads:
-        t.start()
-    
+    shutdown_event = Event()
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+
+        futures = []
+
+        futures.append(
+            executor.submit(sensor.run,
+                            sensor_bus,
+                            shutdown_event,
+                            loop_delay)
+        )
+
+        futures.append(
+            executor.submit(interpreter.run,
+                            sensor_bus,
+                            offset_bus,
+                            shutdown_event)
+        )
+
+        futures.append(
+            executor.submit(controller.run,
+                            offset_bus,
+                            shutdown_event)
+        )
+
+        for f in futures:
+            f.add_done_callback(handle_exception)
+
+        try:
+            if car is not None:
+                car.forward(speed)
+
+            start = time.time()
+
+            while not shutdown_event.is_set():
+                if timeout is not None and (time.time() - start) > timeout:
+                    break
+                time.sleep(0.1)
+
+        except KeyboardInterrupt:
+            print("Ctrl-C received — shutting down")
+
+        finally:
+            shutdown_event.set()
+            executor.shutdown(wait=True)
+
+            if car is not None:
+                car.stop()
+
+    '''
     try:
         if car is not None:
             car.forward(speed)
@@ -380,6 +416,7 @@ def run_line_follow(sensor: Optional[Sensor] = None,
     finally:
         if car is not None:
             car.stop()
+    '''
 
 if __name__ == "__main__":
     import argparse
