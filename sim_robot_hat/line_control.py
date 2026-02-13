@@ -19,6 +19,8 @@ import sys
 #sys.path.insert(0, "../picarx")
 #import picarx_control as ctrl
 import picarx.picarx_control as ctrl
+import threading
+from collections import deque
 
 # When this file is executed directly (python3 sim_robot_hat/line_control.py)
 # the package context is missing which breaks relative imports used by
@@ -35,6 +37,24 @@ except Exception:
     # fall back to absolute import (works when sys.path contains repo root)
     from sim_robot_hat.adc import ADC
 
+
+class Bus:
+    """Thread-safe FIFO message bus."""
+
+    def __init__(self, bus_id):
+        self.bus_id = bus_id
+        self.messages = deque()
+        self.lock = threading.Lock()
+
+    def write(self, message):
+        with self.lock:
+            self.messages.append(message)
+
+    def read(self):
+        with self.lock:
+            if self.messages:
+                return self.messages.popleft()
+            return None
 
 class Sensor:
     """Read three ADC channels and return raw values.
@@ -88,6 +108,13 @@ class Sensor:
         print("middle: " + str(self.middle.read()))
         print("right: " + str(self.right.read()))
         return [self.left.read(), self.middle.read(), self.right.read()]
+    
+    def run(self, output_bus, delay=0.06):
+        while True:
+            readings = self.read()
+            output_bus.write(readings)
+            time.sleep(delay)
+
 
 
 class Interpreter:
@@ -158,6 +185,17 @@ class Interpreter:
         offset = -1 * offset
         return offset
 
+    def run(self, input_bus, output_bus, delay=0.01):
+        while True:
+            readings = input_bus.read()
+            if readings is not None:
+                offset = self.process(readings)
+                if offset is not None:
+                    output_bus.write(offset)
+            time.sleep(delay)
+
+
+
 
 class Controller:
     """Map interpreted offset to steering commands.
@@ -197,6 +235,13 @@ class Controller:
         # call the steering function; allow it to perform its own constraining
         self._steer(angle)
         return angle
+    
+    def run(self, input_bus, delay=0.01):
+        while True:
+            offset = input_bus.read()
+            if offset is not None:
+                self.command(offset)
+            time.sleep(delay)
 
 
 def run_line_follow(sensor: Optional[Sensor] = None,
@@ -254,54 +299,87 @@ def run_line_follow(sensor: Optional[Sensor] = None,
     start = time.time()
     print("Starting line-follow loop. Press Ctrl+C to stop.")
 
+    if car is not None:
+        if verbose:
+            print(f"[line_control] commanding car.forward({speed})")
+        print(speed)
+        car.forward(speed)
+
+    sensor_bus = Bus("sensor_bus")
+    offset_bus = Bus("offset_bus")
+
+    '''
+    while True:
+        if verbose:
+            print("[line_control] about to read sensors")
+        readings = sensor.read()
+        if verbose:
+            print(f"[line_control] sensor read -> {readings}")
+        offset = interpreter.process(readings)
+        # update last_detected_offset when we actually see the line
+        if offset is not None:
+            last_detected_offset = offset
+
+        use_offset = offset if offset is not None else last_detected_offset
+        
+        # If we still don't have any offset (no line seen yet), skip steering
+        if use_offset is None:
+            if verbose:
+                print("[line_control] no line detected yet, skipping steering", flush=True)
+        else:
+            last_angle = controller.command(use_offset)
+            if verbose:
+                print(f"[line_control] readings={readings}, raw_offset={'N/A' if offset is None else f'{offset:.3f}'}, ema_offset={ema_offset if ema_offset is not None else 'N/A'}, angle={last_angle}", flush=True)
+
+        if car is not None:
+            current_speed = speed
+            if verbose:
+                print(f"[line_control] setting car speed to {current_speed}")
+            car.forward(current_speed)
+            #ctrl.maneuver_forward(car, speed=current_speed, angle=0, duration=loop_delay)
+            print("hi")
+            # small sleep to make motion smooth
+            time.sleep(loop_delay)
+        if timeout is not None and (time.time() - start) > timeout:
+            break
+    '''
+    threads = [
+        threading.Thread(
+            target=sensor.run,
+            args=(sensor_bus, loop_delay),
+            daemon=True
+        ),
+        threading.Thread(
+            target=interpreter.run,
+            args=(sensor_bus, offset_bus),
+            daemon=True
+        ),
+        threading.Thread(
+            target=controller.run,
+            args=(offset_bus,),
+            daemon=True
+        ),
+    ]
+    
+    for t in threads:
+        t.start()
+    
     try:
         if car is not None:
-            if verbose:
-                print(f"[line_control] commanding car.forward({speed})")
-            print(speed)
             car.forward(speed)
 
+        start = time.time()
+
         while True:
-            if verbose:
-                print("[line_control] about to read sensors")
-            readings = sensor.read()
-            if verbose:
-                print(f"[line_control] sensor read -> {readings}")
-            offset = interpreter.process(readings)
-            # update last_detected_offset when we actually see the line
-            if offset is not None:
-                last_detected_offset = offset
-
-            use_offset = offset if offset is not None else last_detected_offset
-            
-            # If we still don't have any offset (no line seen yet), skip steering
-            if use_offset is None:
-                if verbose:
-                    print("[line_control] no line detected yet, skipping steering", flush=True)
-            else:
-                last_angle = controller.command(use_offset)
-                if verbose:
-                    print(f"[line_control] readings={readings}, raw_offset={'N/A' if offset is None else f'{offset:.3f}'}, ema_offset={ema_offset if ema_offset is not None else 'N/A'}, angle={last_angle}", flush=True)
-
-            if car is not None:
-                current_speed = speed
-                if verbose:
-                    print(f"[line_control] setting car speed to {current_speed}")
-                car.forward(current_speed)
-                #ctrl.maneuver_forward(car, speed=current_speed, angle=0, duration=loop_delay)
-                print("hi")
-                # small sleep to make motion smooth
-                time.sleep(loop_delay)
             if timeout is not None and (time.time() - start) > timeout:
                 break
+            time.sleep(0.1)
+
     except KeyboardInterrupt:
-        # allow user to stop with Ctrl+C
         pass
     finally:
         if car is not None:
             car.stop()
-        return last_angle
-
 
 if __name__ == "__main__":
     import argparse
@@ -342,7 +420,7 @@ if __name__ == "__main__":
     finally:
         if car is not None:
             try:
-                ecar.stop()
+                car.stop()
                 car.set_dir_servo_angle(0)
             except Exception:
                 pass
