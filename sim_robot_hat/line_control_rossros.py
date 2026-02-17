@@ -26,6 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 from readerwriterlock import rwlock
 
+from sim_robot_hat.rossros import Bus
 # When this file is executed directly (python3 sim_robot_hat/line_control.py)
 # the package context is missing which breaks relative imports used by
 # sibling modules (for example adc.py imports .i2c). Ensure the repository
@@ -40,7 +41,6 @@ try:
 except Exception:
     # fall back to absolute import (works when sys.path contains repo root)
     from sim_robot_hat.adc import ADC
-
 
 class Sensor:
     """Read three ADC channels and return raw values.
@@ -126,6 +126,8 @@ class Interpreter:
             raise ValueError("polarity must be 'dark' or 'light'")
         self.sensitivity = float(sensitivity)
         self.polarity = polarity
+        self.last_version = -1
+
 
     def process(self, readings: Iterable[float]):
         """Return offset in [-1, 1], or None when no clear line is detected.
@@ -171,13 +173,24 @@ class Interpreter:
         return offset
 
     def run(self, input_bus, output_bus, shutdown_event, delay=0.01):
+
         while not shutdown_event.is_set():
-            readings = input_bus.read()
-            if readings is not None:
-                offset = self.process(readings)
-                if offset is not None:
-                    output_bus.write(offset)
+
+            readings, version = input_bus.read()
+
+            if readings is None or version == self.last_version:
+                time.sleep(delay)
+                continue
+
+            self.last_version = version
+
+            offset = self.process(readings)
+
+            if offset is not None:
+                output_bus.write(offset)
+
             time.sleep(delay)
+
 
 
 class Controller:
@@ -199,6 +212,7 @@ class Controller:
                 raise TypeError("car_or_steer_fn must be callable or have set_dir_servo_angle")
             self._steer = car_or_steer_fn.set_dir_servo_angle
         self.scale = float(scale)
+        self.last_version = -1
 
     def command(self, offset: float) -> float:
         """Send steering command for the given offset and return the angle.
@@ -220,10 +234,19 @@ class Controller:
         return angle
     
     def run(self, input_bus, shutdown_event, delay=0.01):
+
         while not shutdown_event.is_set():
-            offset = input_bus.read()
-            if offset is not None:
-                self.command(offset)
+
+            offset, version = input_bus.read()
+
+            if offset is None or version == self.last_version:
+                time.sleep(delay)
+                continue
+
+            self.last_version = version
+
+            self.command(offset)
+
             time.sleep(delay)
 
 
@@ -294,61 +317,112 @@ def run_line_follow(sensor: Optional[Sensor] = None,
         print(speed)
         car.forward(speed)
 
-sensor_bus = Bus(name="Sensor Bus")
-offset_bus = Bus(name="Offset Bus")
-termination_bus = Bus(name="Termination Bus")
+    sensor_bus = Bus("sensor_bus")
+    offset_bus = Bus("offset_bus")
 
-# SENSOR THREAD
-sensor_cp = Producer(
-    producer_function=lambda: sensor_cp_fn(sensor),
-    output_buses=sensor_bus,
-    delay=loop_delay,
-    termination_buses=termination_bus,
-    name="Sensor Producer"
-)
+    '''
+    while True:
+        if verbose:
+            print("[line_control] about to read sensors")
+        readings = sensor.read()
+        if verbose:
+            print(f"[line_control] sensor read -> {readings}")
+        offset = interpreter.process(readings)
+        # update last_detected_offset when we actually see the line
+        if offset is not None:
+            last_detected_offset = offset
 
-# INTERPRETER THREAD
-interpreter_cp = ConsumerProducer(
-    consumer_producer_function=lambda readings:
-        interpreter_cp_fn(readings, interpreter),
-    input_buses=sensor_bus,
-    output_buses=offset_bus,
-    delay=0.01,
-    termination_buses=termination_bus,
-    name="Interpreter CP"
-)
+        use_offset = offset if offset is not None else last_detected_offset
+        
+        # If we still don't have any offset (no line seen yet), skip steering
+        if use_offset is None:
+            if verbose:
+                print("[line_control] no line detected yet, skipping steering", flush=True)
+        else:
+            last_angle = controller.command(use_offset)
+            if verbose:
+                print(f"[line_control] readings={readings}, raw_offset={'N/A' if offset is None else f'{offset:.3f}'}, ema_offset={ema_offset if ema_offset is not None else 'N/A'}, angle={last_angle}", flush=True)
 
-# CONTROLLER THREAD
-controller_cp = Consumer(
-    consumer_function=lambda offset:
-        controller_cp_fn(offset, controller),
-    input_buses=offset_bus,
-    delay=0.01,
-    termination_buses=termination_bus,
-    name="Controller Consumer"
-)
+        if car is not None:
+            current_speed = speed
+            if verbose:
+                print(f"[line_control] setting car speed to {current_speed}")
+            car.forward(current_speed)
+            #ctrl.maneuver_forward(car, speed=current_speed, angle=0, duration=loop_delay)
+            print("hi")
+            # small sleep to make motion smooth
+            time.sleep(loop_delay)
+        if timeout is not None and (time.time() - start) > timeout:
+            break
+    '''
+    shutdown_event = Event()
 
-# TIMER (REQUIRED BY ASSIGNMENT)
-timer = Timer(
-    output_buses=termination_bus,
-    duration=timeout if timeout else 0,
-    delay=0.1,
-    name="Shutdown Timer"
-)
+    with ThreadPoolExecutor(max_workers=3) as executor:
 
-if car is not None:
-    car.forward(speed)
+        futures = []
 
-runConcurrently([
-    sensor_cp,
-    interpreter_cp,
-    controller_cp,
-    timer
-])
+        futures.append(
+            executor.submit(sensor.run,
+                            sensor_bus,
+                            shutdown_event,
+                            loop_delay)
+        )
 
-if car is not None:
-    car.stop()
+        futures.append(
+            executor.submit(interpreter.run,
+                            sensor_bus,
+                            offset_bus,
+                            shutdown_event)
+        )
 
+        futures.append(
+            executor.submit(controller.run,
+                            offset_bus,
+                            shutdown_event)
+        )
+
+        for f in futures:
+            f.add_done_callback(handle_exception)
+
+        try:
+            if car is not None:
+                car.forward(speed)
+
+            start = time.time()
+
+            while not shutdown_event.is_set():
+                if timeout is not None and (time.time() - start) > timeout:
+                    break
+                time.sleep(0.1)
+
+        except KeyboardInterrupt:
+            print("Ctrl-C received — shutting down")
+
+        finally:
+            shutdown_event.set()
+            executor.shutdown(wait=True)
+
+            if car is not None:
+                car.stop()
+
+    '''
+    try:
+        if car is not None:
+            car.forward(speed)
+
+        start = time.time()
+
+        while True:
+            if timeout is not None and (time.time() - start) > timeout:
+                break
+            time.sleep(0.1)
+
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if car is not None:
+            car.stop()
+    '''
 
 if __name__ == "__main__":
     import argparse
