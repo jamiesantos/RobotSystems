@@ -43,21 +43,20 @@ except Exception:
 
 
 class Bus:
-    """Writer-priority shared message bus (whiteboard)."""
-
     def __init__(self, bus_id):
         self.bus_id = bus_id
         self.message = None
+        self.version = 0
         self.lock = rwlock.RWLockWriteD()
 
     def write(self, message):
         with self.lock.gen_wlock():
             self.message = message
+            self.version += 1
 
     def read(self):
         with self.lock.gen_rlock():
-            return self.message
-
+            return self.message, self.version
 
 class Sensor:
     """Read three ADC channels and return raw values.
@@ -143,6 +142,8 @@ class Interpreter:
             raise ValueError("polarity must be 'dark' or 'light'")
         self.sensitivity = float(sensitivity)
         self.polarity = polarity
+        self.last_version = -1
+
 
     def process(self, readings: Iterable[float]):
         """Return offset in [-1, 1], or None when no clear line is detected.
@@ -188,13 +189,24 @@ class Interpreter:
         return offset
 
     def run(self, input_bus, output_bus, shutdown_event, delay=0.01):
+
         while not shutdown_event.is_set():
-            readings = input_bus.read()
-            if readings is not None:
-                offset = self.process(readings)
-                if offset is not None:
-                    output_bus.write(offset)
+
+            readings, version = input_bus.read()
+
+            if readings is None or version == self.last_version:
+                time.sleep(delay)
+                continue
+
+            self.last_version = version
+
+            offset = self.process(readings)
+
+            if offset is not None:
+                output_bus.write(offset)
+
             time.sleep(delay)
+
 
 
 class Controller:
@@ -216,6 +228,7 @@ class Controller:
                 raise TypeError("car_or_steer_fn must be callable or have set_dir_servo_angle")
             self._steer = car_or_steer_fn.set_dir_servo_angle
         self.scale = float(scale)
+        self.last_version = -1
 
     def command(self, offset: float) -> float:
         """Send steering command for the given offset and return the angle.
@@ -237,10 +250,19 @@ class Controller:
         return angle
     
     def run(self, input_bus, shutdown_event, delay=0.01):
+
         while not shutdown_event.is_set():
-            offset = input_bus.read()
-            if offset is not None:
-                self.command(offset)
+
+            offset, version = input_bus.read()
+
+            if offset is None or version == self.last_version:
+                time.sleep(delay)
+                continue
+
+            self.last_version = version
+
+            self.command(offset)
+
             time.sleep(delay)
 
 
