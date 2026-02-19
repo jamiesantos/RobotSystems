@@ -16,8 +16,6 @@ import os
 import sys
 
 import sys
-#sys.path.insert(0, "../picarx")
-#import picarx_control as ctrl
 import picarx.picarx_control as ctrl
 import threading
 from collections import deque
@@ -111,7 +109,7 @@ class Sensor:
         print("right: " + str(self.right.read()))
         return [self.left.read(), self.middle.read(), self.right.read()]
     
-    def run(self, output_bus, shutdown_event, delay=0.06):
+    def run(self, output_bus, shutdown_event, delay=0.01):
         while not shutdown_event.is_set():
             readings = self.read()
             output_bus.write(readings)
@@ -188,10 +186,10 @@ class Interpreter:
         offset = -1 * offset
         return offset
 
-    def run(self, input_bus, output_bus, shutdown_event, delay=0.01):
+    def run(self, input_bus, output_bus, shutdown_event, delay=0.1):
 
         while not shutdown_event.is_set():
-
+            
             readings, version = input_bus.read()
 
             if readings is None or version == self.last_version:
@@ -249,7 +247,7 @@ class Controller:
         self._steer(angle)
         return angle
     
-    def run(self, input_bus, shutdown_event, delay=0.01):
+    def run(self, input_bus, shutdown_event, delay=0.1):
 
         while not shutdown_event.is_set():
 
