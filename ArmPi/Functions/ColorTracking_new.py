@@ -52,12 +52,6 @@ class ArmController:
 
     def move(self):
 
-        coordinate = {
-            'red':   (-14.5, 11.5, 1.5),
-            'green': (-14.5, 5.5,  1.5),
-            'blue':  (-14.5, -0.5, 1.5),
-        }
-
         while True:
 
             if self.isRunning and self.start_pick_up and self.detect_color != 'None':
@@ -170,7 +164,6 @@ class BlockDetector:
             return img
 
         img_copy = img.copy()
-        img_h, img_w = img.shape[:2]
 
         cv2.line(img, (0, img_h // 2), (img_w, img_h // 2), (0, 0, 200), 1)
         cv2.line(img, (img_w // 2, 0), (img_w // 2, img_h), (0, 0, 200), 1)
@@ -207,8 +200,7 @@ class BlockDetector:
 
         if max_area > 2500:
 
-            rect = cv2.minAreaRect(areaMaxContour_max)
-            box = np.int0(cv2.boxPoints(rect))
+            rect_raw = cv2.minAreaRect(best_contour)
 
             img_centerx, img_centery = getCenter(
                 rect,
