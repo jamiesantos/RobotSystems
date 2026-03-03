@@ -16,15 +16,39 @@ from ArmIK.ArmMoveIK import *
 import HiwonderSDK.Board as Board
 from CameraCalibration.CalibrationConfig import *
 
-class ArmController:
-    def __init__(self):
-        self.detector = detector
-        self.thread = None
 
-    def start(self):
+# =========================================================
+# Arm Controller (Motion Only)
+# =========================================================
+
+class ArmController:
+
+    def __init__(self):
+        self.AK = ArmIK()
+        self.servo1 = 500
+
+        self.isRunning = False
+        self.start_pick_up = False
+        self.detect_color = 'None'
+        self.world_X = 0
+        self.world_Y = 0
+        self.rotation_angle = 0
+
         self.thread = threading.Thread(target=self.move)
         self.thread.daemon = True
         self.thread.start()
+
+    def initMove(self):
+        Board.setBusServoPulse(1, self.servo1 - 50, 300)
+        Board.setBusServoPulse(2, 500, 500)
+        self.AK.setPitchRangeMoving((0, 10, 10), -30, -30, -90, 1500)
+
+    def trigger_pickup(self, x, y, angle, color):
+        self.world_X = x
+        self.world_Y = y
+        self.rotation_angle = angle
+        self.detect_color = color
+        self.start_pick_up = True
 
     def move(self):
 
@@ -36,185 +60,109 @@ class ArmController:
 
         while True:
 
-            if self.detector.isRunning:
+            if self.isRunning and self.start_pick_up and self.detect_color != 'None':
 
-                if self.first_move and self.start_pick_up:
-                    self.action_finish = False
+                # Open gripper
+                Board.setBusServoPulse(1, self.servo1 - 280, 500)
 
-                    result = self.AK.setPitchRangeMoving(
-                        (self.detector.world_X, self.world_Y - 2, 5),
-                        -90, -90, 0
-                    )
+                # Rotate wrist
+                servo2_angle = getAngle(
+                    self.world_X,
+                    self.world_Y,
+                    self.rotation_angle
+                )
+                Board.setBusServoPulse(2, servo2_angle, 500)
+                time.sleep(0.8)
 
-                    if result:
-                        time.sleep(result[2] / 1000)
+                # Move down
+                self.AK.setPitchRangeMoving(
+                    (self.world_X, self.world_Y, 2),
+                    -90, -90, 0, 1000
+                )
+                time.sleep(1.5)
 
-                    self.start_pick_up = False
-                    self.first_move = False
-                    self.action_finish = True
+                # Close gripper
+                Board.setBusServoPulse(1, self.servo1, 500)
+                time.sleep(1)
 
-                elif not self.first_move and not self.unreachable:
+                # Lift
+                self.AK.setPitchRangeMoving(
+                    (self.world_X, self.world_Y, 12),
+                    -90, -90, 0, 1000
+                )
+                time.sleep(1)
 
-                    if self.track:
-                        self.detector.AK.setPitchRangeMoving(
-                            (self.world_x, self.world_y - 2, 5),
-                            -90, -90, 0, 20
-                        )
-                        time.sleep(0.02)
-                        self.track = False
+                # Move to drop location
+                drop = coordinate[self.detect_color]
 
-                    if self.start_pick_up:
-                        self.action_finish = False
+                result = self.AK.setPitchRangeMoving(
+                    (drop[0], drop[1], 12),
+                    -90, -90, 0
+                )
+                time.sleep(result[2] / 1000)
 
-                        Board.setBusServoPulse(1, self.servo1 - 280, 500)
+                self.AK.setPitchRangeMoving(drop, -90, -90, 0, 1000)
+                time.sleep(1)
 
-                        servo2_angle = getAngle(
-                            self.detector.world_X,
-                            self.detector.world_Y,
-                            self.rotation_angle
-                        )
-                        Board.setBusServoPulse(2, servo2_angle, 500)
-                        time.sleep(0.8)
+                # Release
+                Board.setBusServoPulse(1, self.servo1 - 200, 500)
+                time.sleep(0.8)
 
-                        self.detector.AK.setPitchRangeMoving(
-                            (self.world_X, self.world_Y, 2),
-                            -90, -90, 0, 1000
-                        )
-                        time.sleep(2)
+                # Return home
+                self.initMove()
 
-                        Board.setBusServoPulse(1, self.servo1, 500)
-                        time.sleep(1)
-
-                        self.detector.AK.setPitchRangeMoving(
-                            (self.world_X, self.world_Y, 12),
-                            -90, -90, 0, 1000
-                        )
-                        time.sleep(1)
-
-                        drop = coordinate[self.detect_color]
-
-                        result = self.detector.AK.setPitchRangeMoving(
-                            (drop[0], drop[1], 12),
-                            -90, -90, 0
-                        )
-                        time.sleep(result[2] / 1000)
-
-                        self.detector.AK.setPitchRangeMoving(
-                            drop,
-                            -90, -90, 0, 1000
-                        )
-                        time.sleep(1)
-
-                        Board.setBusServoPulse(1, self.servo1 - 200, 500)
-                        time.sleep(0.8)
-
-                        self.detector.initMove()
-
-                        self.detect_color = 'None'
-                        self.first_move = True
-                        self.start_pick_up = False
-                        self.action_finish = True
-
-                else:
-                    time.sleep(0.01)
+                # Reset trigger
+                self.start_pick_up = False
+                self.detect_color = 'None'
 
             else:
                 time.sleep(0.01)
 
+
+# =========================================================
+# Block Detector (Vision Only)
+# =========================================================
+
 class BlockDetector:
 
-    def __init__(self, target_color=('red',), move_arm=True):
-        self.AK = ArmIK()
-        self.camera = Camera.Camera()
+    def __init__(self, target_color=('red',)):
 
+        self.camera = Camera.Camera()
         self.target_color = target_color
 
-        # ===== Servo config =====
-        self.servo1 = 500
+        self.arm = ArmController()
 
-        # ===== Runtime state =====
-        self.count = 0
-        self.track = False
-        self._stop = False
-        self.get_roi = False
-        self.center_list = []
-        self.first_move = True
-        self.isRunning = False
-        self.detect_color = 'None'
-        self.action_finish = True
-        self.start_pick_up = False
-        self.start_count_t1 = True
-
-        self.rect = None
         self.size = (640, 480)
-        self.rotation_angle = 0
-        self.unreachable = False
-        self.world_X, self.world_Y = 0, 0
-        self.world_x, self.world_y = 0, 0
-        self.last_x, self.last_y = 0, 0
-        self.roi = ()
-        self.t1 = 0
-
-        self.color_list = []
+        self.detect_color = 'None'
         self.draw_color = (0, 0, 0)
 
-        self.arm = ArmController()
-        self.arm.start()
+        self.color_list = []
+        self.last_x, self.last_y = 0, 0
+        self.world_x, self.world_y = 0, 0
 
-        # Start movement thread
-        if move_arm:
-            self.move_thread = threading.Thread(target=self.move)
-            self.move_thread.daemon = True
-            self.move_thread.start()
-
-    # =============================
-    # Initialization
-    # =============================
-
-    def initMove(self):
-        Board.setBusServoPulse(1, self.servo1 - 50, 300)
-        Board.setBusServoPulse(2, 500, 500)
-        self.AK.setPitchRangeMoving((0, 10, 10), -30, -30, -90, 1500)
-
-    def reset(self):
-        self.count = 0
-        self.track = False
-        self._stop = False
-        self.get_roi = False
-        self.center_list = []
-        self.first_move = True
-        self.detect_color = 'None'
-        self.action_finish = True
-        self.start_pick_up = False
-        self.start_count_t1 = True
+        self.isRunning = False
 
     def initialize(self):
         print("BlockDetector Init")
-        self.initMove()
-        self.reset()
-        self.isRunning = True
+        self.arm.initMove()
+        self.arm.isRunning = True
         self.camera.camera_open()
+        self.isRunning = True
         print("BlockDetector Start")
 
     def set_rgb(self, color):
         if color == "red":
-            Board.RGB.setPixelColor(0, Board.PixelColor(255, 0, 0))
-            Board.RGB.setPixelColor(1, Board.PixelColor(255, 0, 0))
+            c = (255, 0, 0)
         elif color == "green":
-            Board.RGB.setPixelColor(0, Board.PixelColor(0, 255, 0))
-            Board.RGB.setPixelColor(1, Board.PixelColor(0, 255, 0))
+            c = (0, 255, 0)
         elif color == "blue":
-            Board.RGB.setPixelColor(0, Board.PixelColor(0, 0, 255))
-            Board.RGB.setPixelColor(1, Board.PixelColor(0, 0, 255))
+            c = (0, 0, 255)
         else:
-            Board.RGB.setPixelColor(0, Board.PixelColor(0, 0, 0))
-            Board.RGB.setPixelColor(1, Board.PixelColor(0, 0, 0))
+            c = (0, 0, 0)
 
+        Board.RGB.setPixelColor(0, Board.PixelColor(*c))
+        Board.RGB.setPixelColor(1, Board.PixelColor(*c))
         Board.RGB.show()
-            
-    # =============================
-    # Detection (Former run())
-    # =============================
 
     def process(self, img):
 
@@ -224,65 +172,47 @@ class BlockDetector:
         img_copy = img.copy()
         img_h, img_w = img.shape[:2]
 
-        # Crosshair overlay
         cv2.line(img, (0, img_h // 2), (img_w, img_h // 2), (0, 0, 200), 1)
         cv2.line(img, (img_w // 2, 0), (img_w // 2, img_h), (0, 0, 200), 1)
 
         frame_resize = cv2.resize(img_copy, self.size)
         frame_gb = cv2.GaussianBlur(frame_resize, (11, 11), 11)
-
-        # === ROI optimization (NEW) ===
-        if self.get_roi and not self.start_pick_up:
-            self.get_roi = False
-            frame_gb = getMaskROI(frame_gb, self.roi, self.size)
-
         frame_lab = cv2.cvtColor(frame_gb, cv2.COLOR_BGR2LAB)
 
         max_area = 0
         areaMaxContour_max = None
         color_area_max = None
 
-        # === Find largest valid contour ===
         for color in color_range:
             if color in self.target_color:
+
                 mask = cv2.inRange(
                     frame_lab,
                     color_range[color][0],
                     color_range[color][1]
                 )
 
-                opened = cv2.morphologyEx(
-                    mask, cv2.MORPH_OPEN, np.ones((6, 6), np.uint8)
-                )
-                closed = cv2.morphologyEx(
-                    opened, cv2.MORPH_CLOSE, np.ones((6, 6), np.uint8)
-                )
-
                 contours = cv2.findContours(
-                    closed,
+                    mask,
                     cv2.RETR_EXTERNAL,
                     cv2.CHAIN_APPROX_NONE
                 )[-2]
 
-                areaMaxContour, area_max = self.getAreaMaxContour(contours)
+                contour, area = self.getAreaMaxContour(contours)
 
-                if areaMaxContour is not None and area_max > max_area:
-                    max_area = area_max
-                    areaMaxContour_max = areaMaxContour
+                if contour is not None and area > max_area:
+                    max_area = area
+                    areaMaxContour_max = contour
                     color_area_max = color
 
-        # === If block found ===
         if max_area > 2500:
 
             rect = cv2.minAreaRect(areaMaxContour_max)
             box = np.int0(cv2.boxPoints(rect))
 
-            self.roi = getROI(box)
-            self.get_roi = True
-
             img_centerx, img_centery = getCenter(
                 rect,
-                self.roi,
+                getROI(box),
                 self.size,
                 square_length
             )
@@ -298,61 +228,31 @@ class BlockDetector:
 
             self.last_x = self.world_x
             self.last_y = self.world_y
-            self.track = True
 
-            # === Multi-frame color confirmation (NEW) ===
-            if color_area_max == 'red':
-                color_id = 1
-            elif color_area_max == 'green':
-                color_id = 2
-            elif color_area_max == 'blue':
-                color_id = 3
-            else:
-                color_id = 0
+            self.detect_color = color_area_max
+            self.set_rgb(self.detect_color)
 
-            self.color_list.append(color_id)
+            if distance < 0.3:
+                self.arm.trigger_pickup(
+                    self.world_x,
+                    self.world_y,
+                    rect[2],
+                    self.detect_color
+                )
 
-            if len(self.color_list) == 3:
-                avg_color = int(round(np.mean(np.array(self.color_list))))
-                self.color_list = []
-
-                if avg_color == 1:
-                    self.detect_color = 'red'
-                    self.draw_color = (0, 0, 255)
-                elif avg_color == 2:
-                    self.detect_color = 'green'
-                    self.draw_color = (0, 255, 0)
-                elif avg_color == 3:
-                    self.detect_color = 'blue'
-                    self.draw_color = (255, 0, 0)
-                else:
-                    self.detect_color = 'None'
-                    self.draw_color = (0, 0, 0)
-
-                self.set_rgb(self.detect_color)
-
-            # === Stable pickup trigger ===
-            if self.action_finish and distance < 0.3:
-                self.rotation_angle = rect[2]
-                self.world_X = self.world_x
-                self.world_Y = self.world_y
-                self.start_pick_up = True
-
-            cv2.drawContours(img, [box], -1, self.draw_color, 2)
+            cv2.drawContours(img, [box], -1, (0, 255, 0), 2)
 
         else:
             self.detect_color = 'None'
-            self.draw_color = (0, 0, 0)
             self.set_rgb('None')
 
-        # === On-screen display ===
         cv2.putText(
             img,
             "Color: " + self.detect_color,
             (10, img.shape[0] - 10),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.65,
-            self.draw_color,
+            (0, 255, 0),
             2
         )
 
@@ -370,18 +270,12 @@ class BlockDetector:
 
         return area_max_contour, contour_area_max
 
-    # =============================
-    # Main Loop
-    # =============================
-
     def run(self):
         while True:
             img = self.camera.frame
             if img is not None:
-                frame = img.copy()
-                output = self.process(frame)
+                output = self.process(img.copy())
                 cv2.imshow("Frame", output)
-
                 if cv2.waitKey(1) == 27:
                     break
 
@@ -389,13 +283,14 @@ class BlockDetector:
 
     def cleanup(self):
         self.isRunning = False
+        self.arm.isRunning = False
         self.camera.camera_close()
         cv2.destroyAllWindows()
 
 
-# =============================
+# =========================================================
 # MAIN
-# =============================
+# =========================================================
 
 if __name__ == '__main__':
     detector = BlockDetector(target_color=('red',))
