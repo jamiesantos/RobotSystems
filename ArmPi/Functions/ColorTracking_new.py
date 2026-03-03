@@ -16,6 +16,110 @@ from ArmIK.ArmMoveIK import *
 import HiwonderSDK.Board as Board
 from CameraCalibration.CalibrationConfig import *
 
+class ArmController:
+    def __init__(self):
+        self.detector = detector
+        self.thread = None
+
+    def start(self):
+        self.thread = threading.Thread(target=self.move)
+        self.thread.daemon = True
+        self.thread.start()
+
+    def move(self):
+
+        coordinate = {
+            'red':   (-14.5, 11.5, 1.5),
+            'green': (-14.5, 5.5,  1.5),
+            'blue':  (-14.5, -0.5, 1.5),
+        }
+
+        while True:
+
+            if self.detector.isRunning:
+
+                if self.first_move and self.start_pick_up:
+                    self.action_finish = False
+
+                    result = self.AK.setPitchRangeMoving(
+                        (self.detector.world_X, self.world_Y - 2, 5),
+                        -90, -90, 0
+                    )
+
+                    if result:
+                        time.sleep(result[2] / 1000)
+
+                    self.start_pick_up = False
+                    self.first_move = False
+                    self.action_finish = True
+
+                elif not self.first_move and not self.unreachable:
+
+                    if self.track:
+                        self.detector.AK.setPitchRangeMoving(
+                            (self.world_x, self.world_y - 2, 5),
+                            -90, -90, 0, 20
+                        )
+                        time.sleep(0.02)
+                        self.track = False
+
+                    if self.start_pick_up:
+                        self.action_finish = False
+
+                        Board.setBusServoPulse(1, self.servo1 - 280, 500)
+
+                        servo2_angle = getAngle(
+                            self.detector.world_X,
+                            self.detector.world_Y,
+                            self.rotation_angle
+                        )
+                        Board.setBusServoPulse(2, servo2_angle, 500)
+                        time.sleep(0.8)
+
+                        self.detector.AK.setPitchRangeMoving(
+                            (self.world_X, self.world_Y, 2),
+                            -90, -90, 0, 1000
+                        )
+                        time.sleep(2)
+
+                        Board.setBusServoPulse(1, self.servo1, 500)
+                        time.sleep(1)
+
+                        self.detector.AK.setPitchRangeMoving(
+                            (self.world_X, self.world_Y, 12),
+                            -90, -90, 0, 1000
+                        )
+                        time.sleep(1)
+
+                        drop = coordinate[self.detect_color]
+
+                        result = self.detector.AK.setPitchRangeMoving(
+                            (drop[0], drop[1], 12),
+                            -90, -90, 0
+                        )
+                        time.sleep(result[2] / 1000)
+
+                        self.detector.AK.setPitchRangeMoving(
+                            drop,
+                            -90, -90, 0, 1000
+                        )
+                        time.sleep(1)
+
+                        Board.setBusServoPulse(1, self.servo1 - 200, 500)
+                        time.sleep(0.8)
+
+                        self.detector.initMove()
+
+                        self.detect_color = 'None'
+                        self.first_move = True
+                        self.start_pick_up = False
+                        self.action_finish = True
+
+                else:
+                    time.sleep(0.01)
+
+            else:
+                time.sleep(0.01)
 
 class BlockDetector:
 
@@ -54,6 +158,9 @@ class BlockDetector:
         self.color_list = []
         self.draw_color = (0, 0, 0)
 
+        self.arm = ArmController()
+        self.arm.start()
+
         # Start movement thread
         if move_arm:
             self.move_thread = threading.Thread(target=self.move)
@@ -88,105 +195,6 @@ class BlockDetector:
         self.isRunning = True
         self.camera.camera_open()
         print("BlockDetector Start")
-
-    # =============================
-    # Movement Thread (ARM LOGIC)
-    # =============================
-
-    def move(self):
-
-        coordinate = {
-            'red':   (-14.5, 11.5, 1.5),
-            'green': (-14.5, 5.5,  1.5),
-            'blue':  (-14.5, -0.5, 1.5),
-        }
-
-        while True:
-
-            if self.isRunning:
-
-                if self.first_move and self.start_pick_up:
-                    self.action_finish = False
-
-                    result = self.AK.setPitchRangeMoving(
-                        (self.world_X, self.world_Y - 2, 5),
-                        -90, -90, 0
-                    )
-
-                    if result:
-                        time.sleep(result[2] / 1000)
-
-                    self.start_pick_up = False
-                    self.first_move = False
-                    self.action_finish = True
-
-                elif not self.first_move and not self.unreachable:
-
-                    if self.track:
-                        self.AK.setPitchRangeMoving(
-                            (self.world_x, self.world_y - 2, 5),
-                            -90, -90, 0, 20
-                        )
-                        time.sleep(0.02)
-                        self.track = False
-
-                    if self.start_pick_up:
-                        self.action_finish = False
-
-                        Board.setBusServoPulse(1, self.servo1 - 280, 500)
-
-                        servo2_angle = getAngle(
-                            self.world_X,
-                            self.world_Y,
-                            self.rotation_angle
-                        )
-                        Board.setBusServoPulse(2, servo2_angle, 500)
-                        time.sleep(0.8)
-
-                        self.AK.setPitchRangeMoving(
-                            (self.world_X, self.world_Y, 2),
-                            -90, -90, 0, 1000
-                        )
-                        time.sleep(2)
-
-                        Board.setBusServoPulse(1, self.servo1, 500)
-                        time.sleep(1)
-
-                        self.AK.setPitchRangeMoving(
-                            (self.world_X, self.world_Y, 12),
-                            -90, -90, 0, 1000
-                        )
-                        time.sleep(1)
-
-                        drop = coordinate[self.detect_color]
-
-                        result = self.AK.setPitchRangeMoving(
-                            (drop[0], drop[1], 12),
-                            -90, -90, 0
-                        )
-                        time.sleep(result[2] / 1000)
-
-                        self.AK.setPitchRangeMoving(
-                            drop,
-                            -90, -90, 0, 1000
-                        )
-                        time.sleep(1)
-
-                        Board.setBusServoPulse(1, self.servo1 - 200, 500)
-                        time.sleep(0.8)
-
-                        self.initMove()
-
-                        self.detect_color = 'None'
-                        self.first_move = True
-                        self.start_pick_up = False
-                        self.action_finish = True
-
-                else:
-                    time.sleep(0.01)
-
-            else:
-                time.sleep(0.01)
 
     def set_rgb(self, color):
         if color == "red":
