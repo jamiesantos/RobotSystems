@@ -232,7 +232,7 @@ class BlockDetector:
             self.detect_color = color_area_max
             self.set_rgb(self.detect_color)
 
-            if distance < 0.3:
+            if distance < 0.3 and not self.arm.start_pick_up:
                 self.arm.trigger_pickup(
                     self.world_x,
                     self.world_y,
@@ -293,6 +293,6 @@ class BlockDetector:
 # =========================================================
 
 if __name__ == '__main__':
-    detector = BlockDetector(target_color=('red',))
+    detector = BlockDetector(target_color=('red', 'green', 'blue'))
     detector.initialize()
     detector.run()
