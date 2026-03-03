@@ -19,7 +19,7 @@ from CameraCalibration.CalibrationConfig import *
 
 class BlockDetector:
 
-    def __init__(self, target_color=('red',)):
+    def __init__(self, target_color=('red',), move_arm=True):
         self.AK = ArmIK()
         self.camera = Camera.Camera()
 
@@ -51,10 +51,14 @@ class BlockDetector:
         self.roi = ()
         self.t1 = 0
 
+        self.color_list = []
+        self.draw_color = (0, 0, 0)
+
         # Start movement thread
-        self.move_thread = threading.Thread(target=self.move)
-        self.move_thread.daemon = True
-        self.move_thread.start()
+        if move_arm:
+            self.move_thread = threading.Thread(target=self.move)
+            self.move_thread.daemon = True
+            self.move_thread.start()
 
     # =============================
     # Initialization
@@ -184,6 +188,22 @@ class BlockDetector:
             else:
                 time.sleep(0.01)
 
+    def set_rgb(self, color):
+        if color == "red":
+            Board.RGB.setPixelColor(0, Board.PixelColor(255, 0, 0))
+            Board.RGB.setPixelColor(1, Board.PixelColor(255, 0, 0))
+        elif color == "green":
+            Board.RGB.setPixelColor(0, Board.PixelColor(0, 255, 0))
+            Board.RGB.setPixelColor(1, Board.PixelColor(0, 255, 0))
+        elif color == "blue":
+            Board.RGB.setPixelColor(0, Board.PixelColor(0, 0, 255))
+            Board.RGB.setPixelColor(1, Board.PixelColor(0, 0, 255))
+        else:
+            Board.RGB.setPixelColor(0, Board.PixelColor(0, 0, 0))
+            Board.RGB.setPixelColor(1, Board.PixelColor(0, 0, 0))
+
+        Board.RGB.show()
+            
     # =============================
     # Detection (Former run())
     # =============================
@@ -196,36 +216,57 @@ class BlockDetector:
         img_copy = img.copy()
         img_h, img_w = img.shape[:2]
 
+        # Crosshair overlay
         cv2.line(img, (0, img_h // 2), (img_w, img_h // 2), (0, 0, 200), 1)
         cv2.line(img, (img_w // 2, 0), (img_w // 2, img_h), (0, 0, 200), 1)
 
         frame_resize = cv2.resize(img_copy, self.size)
         frame_gb = cv2.GaussianBlur(frame_resize, (11, 11), 11)
+
+        # === ROI optimization (NEW) ===
+        if self.get_roi and not self.start_pick_up:
+            self.get_roi = False
+            frame_gb = getMaskROI(frame_gb, self.roi, self.size)
+
         frame_lab = cv2.cvtColor(frame_gb, cv2.COLOR_BGR2LAB)
 
-        area_max = 0
-        areaMaxContour = None
+        max_area = 0
+        areaMaxContour_max = None
+        color_area_max = None
 
+        # === Find largest valid contour ===
         for color in color_range:
             if color in self.target_color:
-                self.detect_color = color
-
                 mask = cv2.inRange(
                     frame_lab,
                     color_range[color][0],
                     color_range[color][1]
                 )
 
+                opened = cv2.morphologyEx(
+                    mask, cv2.MORPH_OPEN, np.ones((6, 6), np.uint8)
+                )
+                closed = cv2.morphologyEx(
+                    opened, cv2.MORPH_CLOSE, np.ones((6, 6), np.uint8)
+                )
+
                 contours = cv2.findContours(
-                    mask,
+                    closed,
                     cv2.RETR_EXTERNAL,
                     cv2.CHAIN_APPROX_NONE
                 )[-2]
 
                 areaMaxContour, area_max = self.getAreaMaxContour(contours)
 
-        if area_max > 2500:
-            rect = cv2.minAreaRect(areaMaxContour)
+                if areaMaxContour is not None and area_max > max_area:
+                    max_area = area_max
+                    areaMaxContour_max = areaMaxContour
+                    color_area_max = color
+
+        # === If block found ===
+        if max_area > 2500:
+
+            rect = cv2.minAreaRect(areaMaxContour_max)
             box = np.int0(cv2.boxPoints(rect))
 
             self.roi = getROI(box)
@@ -237,6 +278,7 @@ class BlockDetector:
                 self.size,
                 square_length
             )
+
             self.world_x, self.world_y = convertCoordinate(
                 img_centerx, img_centery, self.size
             )
@@ -250,11 +292,61 @@ class BlockDetector:
             self.last_y = self.world_y
             self.track = True
 
+            # === Multi-frame color confirmation (NEW) ===
+            if color_area_max == 'red':
+                color_id = 1
+            elif color_area_max == 'green':
+                color_id = 2
+            elif color_area_max == 'blue':
+                color_id = 3
+            else:
+                color_id = 0
+
+            self.color_list.append(color_id)
+
+            if len(self.color_list) == 3:
+                avg_color = int(round(np.mean(np.array(self.color_list))))
+                self.color_list = []
+
+                if avg_color == 1:
+                    self.detect_color = 'red'
+                    self.draw_color = (0, 0, 255)
+                elif avg_color == 2:
+                    self.detect_color = 'green'
+                    self.draw_color = (0, 255, 0)
+                elif avg_color == 3:
+                    self.detect_color = 'blue'
+                    self.draw_color = (255, 0, 0)
+                else:
+                    self.detect_color = 'None'
+                    self.draw_color = (0, 0, 0)
+
+                self.set_rgb(self.detect_color)
+
+            # === Stable pickup trigger ===
             if self.action_finish and distance < 0.3:
                 self.rotation_angle = rect[2]
                 self.world_X = self.world_x
                 self.world_Y = self.world_y
                 self.start_pick_up = True
+
+            cv2.drawContours(img, [box], -1, self.draw_color, 2)
+
+        else:
+            self.detect_color = 'None'
+            self.draw_color = (0, 0, 0)
+            self.set_rgb('None')
+
+        # === On-screen display ===
+        cv2.putText(
+            img,
+            "Color: " + self.detect_color,
+            (10, img.shape[0] - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.65,
+            self.draw_color,
+            2
+        )
 
         return img
 
