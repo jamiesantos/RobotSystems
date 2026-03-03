@@ -255,76 +255,77 @@ class BlockDetector:
     # =============================
     # Detection (Former run())
     # =============================
-
     def process(self, img):
 
         if not self.isRunning:
             return img
 
         img_copy = img.copy()
-        img_h, img_w = img.shape[:2]
 
-        # Crosshair overlay
-        cv2.line(img, (0, img_h // 2), (img_w, img_h // 2), (0, 0, 200), 1)
-        cv2.line(img, (img_w // 2, 0), (img_w // 2, img_h), (0, 0, 200), 1)
+        # Resize
+        frame_resize = cv2.resize(img_copy, self.size,
+                                  interpolation=cv2.INTER_NEAREST)
 
-        frame_resize = cv2.resize(img_copy, self.size)
-        frame_gb = cv2.GaussianBlur(frame_resize, (11, 11), 11)
+        # Blur
+        frame_blur = cv2.GaussianBlur(frame_resize, (11, 11), 11)
 
-        # === ROI optimization (NEW) ===
-        if self.get_roi and not self.start_pick_up:
-            self.get_roi = False
-            frame_gb = getMaskROI(frame_gb, self.roi, self.size)
-
-        frame_lab = cv2.cvtColor(frame_gb, cv2.COLOR_BGR2LAB)
+        # LAB color space
+        frame_lab = cv2.cvtColor(frame_blur, cv2.COLOR_BGR2LAB)
 
         max_area = 0
-        areaMaxContour_max = None
-        color_area_max = None
+        best_contour = None
+        best_color = 'None'
 
-        # === Find largest valid contour ===
-        for color in color_range:
-            if color in self.target_color:
-                mask = cv2.inRange(
-                    frame_lab,
-                    color_range[color][0],
-                    color_range[color][1]
-                )
+        # Loop through allowed colors
+        for color in self.target_color:
 
-                opened = cv2.morphologyEx(
-                    mask, cv2.MORPH_OPEN, np.ones((6, 6), np.uint8)
-                )
-                closed = cv2.morphologyEx(
-                    opened, cv2.MORPH_CLOSE, np.ones((6, 6), np.uint8)
-                )
+            mask = cv2.inRange(
+                frame_lab,
+                color_range[color][0],
+                color_range[color][1]
+            )
 
-                contours = cv2.findContours(
-                    closed,
-                    cv2.RETR_EXTERNAL,
-                    cv2.CHAIN_APPROX_NONE
-                )[-2]
+            opened = cv2.morphologyEx(
+                mask, cv2.MORPH_OPEN,
+                np.ones((6, 6), np.uint8)
+            )
 
-                areaMaxContour, area_max = self.getAreaMaxContour(contours)
+            closed = cv2.morphologyEx(
+                opened, cv2.MORPH_CLOSE,
+                np.ones((6, 6), np.uint8)
+            )
 
-                if areaMaxContour is not None and area_max > max_area:
-                    max_area = area_max
-                    areaMaxContour_max = areaMaxContour
-                    color_area_max = color
+            contours = cv2.findContours(
+                closed,
+                cv2.RETR_EXTERNAL,
+                cv2.CHAIN_APPROX_NONE
+            )[-2]
 
-        # === If block found ===
+            contour, area = self.getAreaMaxContour(contours)
+
+            if contour is not None and area > max_area:
+                max_area = area
+                best_contour = contour
+                best_color = color
+
+        # =============================
+        # If valid block found
+        # =============================
         if max_area > 2500:
 
-            rect = cv2.minAreaRect(areaMaxContour_max)
-            box = np.int0(cv2.boxPoints(rect))
+            rect_raw = cv2.minAreaRect(best_contour)
 
-            self.roi = getROI(box)
-            self.get_roi = True
+            # Force rect into pure Python floats
+            rect = (
+                (float(rect_raw[0][0]), float(rect_raw[0][1])),
+                (float(rect_raw[1][0]), float(rect_raw[1][1])),
+                float(rect_raw[2])
+            )
+            box = cv2.boxPoints(rect)
+            box = np.array(box, dtype=np.int32)
 
             img_centerx, img_centery = getCenter(
-                rect,
-                self.roi,
-                self.size,
-                square_length
+                rect, box, self.size, square_length
             )
 
             self.world_x, self.world_y = convertCoordinate(
@@ -340,61 +341,43 @@ class BlockDetector:
             self.last_y = self.world_y
             self.track = True
 
-            # === Multi-frame color confirmation (NEW) ===
-            if color_area_max == 'red':
-                color_id = 1
-            elif color_area_max == 'green':
-                color_id = 2
-            elif color_area_max == 'blue':
-                color_id = 3
-            else:
-                color_id = 0
+            self.detect_color = best_color
 
-            self.color_list.append(color_id)
+            # Set LED immediately (like stable version)
+            self.set_rgb(self.detect_color)
 
-            if len(self.color_list) == 3:
-                avg_color = int(round(np.mean(np.array(self.color_list))))
-                self.color_list = []
-
-                if avg_color == 1:
-                    self.detect_color = 'red'
-                    self.draw_color = (0, 0, 255)
-                elif avg_color == 2:
-                    self.detect_color = 'green'
-                    self.draw_color = (0, 255, 0)
-                elif avg_color == 3:
-                    self.detect_color = 'blue'
-                    self.draw_color = (255, 0, 0)
-                else:
-                    self.detect_color = 'None'
-                    self.draw_color = (0, 0, 0)
-
-                self.set_rgb(self.detect_color)
-
-            # === Stable pickup trigger ===
+            # Save pickup position if stable
             if self.action_finish and distance < 0.3:
                 self.rotation_angle = rect[2]
                 self.world_X = self.world_x
                 self.world_Y = self.world_y
                 self.start_pick_up = True
 
-            cv2.drawContours(img, [box], -1, self.draw_color, 2)
+            # Draw bounding box
+            if best_color == 'red':
+                draw_color = (0, 0, 255)
+            elif best_color == 'green':
+                draw_color = (0, 255, 0)
+            elif best_color == 'blue':
+                draw_color = (255, 0, 0)
+            else:
+                draw_color = (255, 255, 255)
+
+            cv2.drawContours(img, [box], -1, draw_color, 2)
+
+            cv2.putText(
+                img,
+                f"{self.detect_color} ({round(self.world_x,1)}, {round(self.world_y,1)})",
+                (int(box[0][0]), int(box[0][1])),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                draw_color,
+                1
+            )
 
         else:
             self.detect_color = 'None'
-            self.draw_color = (0, 0, 0)
             self.set_rgb('None')
-
-        # === On-screen display ===
-        cv2.putText(
-            img,
-            "Color: " + self.detect_color,
-            (10, img.shape[0] - 10),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
-            self.draw_color,
-            2
-        )
 
         return img
 
@@ -438,6 +421,6 @@ class BlockDetector:
 # =============================
 
 if __name__ == '__main__':
-    detector = BlockDetector(target_color=('red',))
+    detector = BlockDetector(target_color=('red', 'green', 'blue'))
     detector.initialize()
     detector.run()
